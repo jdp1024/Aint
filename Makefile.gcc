@@ -1,0 +1,85 @@
+CC = gcc
+
+CFLAGS = -DNDEBUG -O3 -flto -fvisibility=hidden -ffunction-sections -finline-functions
+CFLAGS += -fno-ident -fomit-frame-pointer -fno-stack-protector -fno-exceptions
+CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
+
+# 1. compiler flags for SIMD
+
+TARGET_ARCH := $(shell $(CC) -dumpmachine)
+ifneq ($(filter x86_64% amd64%,$(TARGET_ARCH)),)
+
+SIMD_FLAGS = -mavx2 -mavx -msse3 -msse4.2 -mbmi -mbmi2 -mpopcnt
+
+else ifneq ($(filter aarch64% arm64%,$(TARGET_ARCH)),)
+
+SIMD_FLAGS =
+
+else
+
+$(error Unsupported compiler target $(TARGET_ARCH): use x86-64 or ARM64)
+
+endif
+
+# 2. linker flags for thread library
+
+ifeq ($(OS),Windows_NT)
+
+TARGET = aint.exe
+THREAD_FLAGS =
+EXEEXT = .exe
+LDFLAGS = -static -Wl,-flto,-s,-x,--gc-sections,--disable-reloc-section,--disable-dynamicbase,--no-seh
+
+else
+
+TARGET = aint
+THREAD_FLAGS = -pthread
+EXEEXT =
+LDFLAGS =
+
+endif
+
+SRC = src/codec.c src/main.c src/archive.c src/garble.c src/thread.c src/fs.c
+HEADERS = src/ain.h src/thread.h src/fs.h
+THREAD_TEST = build/thread_test$(EXEEXT)
+FS_TEST = build/fs_test$(EXEEXT)
+SIMD_TEST = build/simd_test$(EXEEXT)
+PROGRESS_TEST = build/progress_test$(EXEEXT)
+
+.PHONY: all clean test-threads test-fs test-simd test-progress
+
+all: $(TARGET)
+
+$(TARGET): $(SRC) $(HEADERS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
+
+test-threads: $(THREAD_TEST)
+	./$(THREAD_TEST)
+
+test-fs: $(FS_TEST)
+	./$(FS_TEST)
+
+test-simd: $(SIMD_TEST)
+	./$(SIMD_TEST)
+
+test-progress: $(PROGRESS_TEST)
+	./$(PROGRESS_TEST)
+
+$(PROGRESS_TEST): tests/progress_test.c src/archive.c src/codec.c src/garble.c src/thread.c src/fs.c $(HEADERS)
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ tests/progress_test.c src/archive.c src/codec.c src/garble.c src/thread.c src/fs.c $(LDLIBS)
+
+$(SIMD_TEST): tests/simd_test.c src/codec.c src/ain.h src/thread.c src/thread.h
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ tests/simd_test.c src/thread.c $(LDLIBS)
+
+$(THREAD_TEST): tests/thread_test.c src/thread.c src/thread.h
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(THREAD_FLAGS) -o $@ tests/thread_test.c src/thread.c $(LDLIBS)
+
+$(FS_TEST): tests/fs_test.c src/fs.c src/fs.h
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra -o $@ tests/fs_test.c src/fs.c $(LDLIBS)
+
+clean:
+	rm -f $(TARGET) $(THREAD_TEST) $(FS_TEST) $(SIMD_TEST) $(PROGRESS_TEST)

@@ -1,0 +1,6 @@
+[plugininstall]
+description=AINT - A modern AIN archiver by jdp1024
+type=wcx
+file=ain.wcx
+defaultdir=AIN
+defaultextension=ain
