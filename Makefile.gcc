@@ -45,8 +45,10 @@ THREAD_TEST = build/thread_test$(EXEEXT)
 FS_TEST = build/fs_test$(EXEEXT)
 SIMD_TEST = build/simd_test$(EXEEXT)
 PROGRESS_TEST = build/progress_test$(EXEEXT)
+DECODE_TEST = build/decode_test$(EXEEXT)
+CHECKSUM_TEST = build/checksum_test$(EXEEXT)
 
-.PHONY: all clean test-threads test-fs test-simd test-progress
+.PHONY: all clean test-threads test-fs test-simd test-progress test-decode test-checksum
 
 all: $(TARGET)
 
@@ -65,6 +67,20 @@ test-simd: $(SIMD_TEST)
 test-progress: $(PROGRESS_TEST)
 	./$(PROGRESS_TEST)
 
+test-decode: $(DECODE_TEST)
+	./$(DECODE_TEST)
+
+test-checksum: $(CHECKSUM_TEST)
+	./$(CHECKSUM_TEST)
+
+$(CHECKSUM_TEST): tests/checksum_test.c src/archive.c src/codec.c src/garble.c src/thread.c src/fs.c $(HEADERS)
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ tests/checksum_test.c src/codec.c src/garble.c src/thread.c src/fs.c $(LDLIBS)
+
+$(DECODE_TEST): tests/decode_test.c src/codec.c src/ain.h src/thread.c src/thread.h
+	mkdir -p build
+	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ tests/decode_test.c src/thread.c $(LDLIBS)
+
 $(PROGRESS_TEST): tests/progress_test.c src/archive.c src/codec.c src/garble.c src/thread.c src/fs.c $(HEADERS)
 	mkdir -p build
 	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra $(SIMD_FLAGS) $(THREAD_FLAGS) -o $@ tests/progress_test.c src/archive.c src/codec.c src/garble.c src/thread.c src/fs.c $(LDLIBS)
@@ -82,4 +98,4 @@ $(FS_TEST): tests/fs_test.c src/fs.c src/fs.h
 	$(CC) $(CPPFLAGS) -O2 -Wall -Wextra -o $@ tests/fs_test.c src/fs.c $(LDLIBS)
 
 clean:
-	rm -f $(TARGET) $(THREAD_TEST) $(FS_TEST) $(SIMD_TEST) $(PROGRESS_TEST)
+	rm -f $(TARGET) $(THREAD_TEST) $(FS_TEST) $(SIMD_TEST) $(PROGRESS_TEST) $(DECODE_TEST) $(CHECKSUM_TEST)

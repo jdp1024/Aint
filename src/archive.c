@@ -11,6 +11,25 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
+#if defined(__aarch64__) || defined(_M_ARM64)
+#ifdef _MSC_VER
+#include <arm64_neon.h>
+#else
+#include <arm_neon.h>
+#endif
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#endif
+#if defined(__AARCH64EB__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
+#error "this archive reader requires a little-endian target"
+#endif
+#ifndef AIN_FORCEINLINE
+#ifdef _MSC_VER
+#define AIN_FORCEINLINE __forceinline
+#else
+#define AIN_FORCEINLINE inline __attribute__((always_inline))
+#endif
+#endif
 
 /* ---------------- small helpers ---------------- */
 
@@ -179,25 +198,69 @@ int ain_size_summary(const char *path, uint64_t uncompressed, double started,
 static uint16_t sum16(const uint8_t *p, size_t n)
 {
     uint32_t s = 0;
-    size_t i;
-    for (i = 0; i < n; i++)
+    size_t i = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    if (n >= 64) {
+        uint64x2_t a = vdupq_n_u64(0), b = a, c = a, d = a;
+        for (; n - i >= 64; i += 64) {
+            a = vpadalq_u32(a, vpaddlq_u16(vpaddlq_u8(vld1q_u8(p + i))));
+            b = vpadalq_u32(b, vpaddlq_u16(vpaddlq_u8(vld1q_u8(p + i + 16))));
+            c = vpadalq_u32(c, vpaddlq_u16(vpaddlq_u8(vld1q_u8(p + i + 32))));
+            d = vpadalq_u32(d, vpaddlq_u16(vpaddlq_u8(vld1q_u8(p + i + 48))));
+        }
+        a = vaddq_u64(vaddq_u64(a, b), vaddq_u64(c, d));
+        for (; n - i >= 16; i += 16)
+            a = vpadalq_u32(a, vpaddlq_u16(vpaddlq_u8(vld1q_u8(p + i))));
+        s = (uint32_t)(vgetq_lane_u64(a, 0) + vgetq_lane_u64(a, 1));
+    }
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    if (n >= 128) {
+        /* Independent byte sums; only the low 16 bits survive reduction. */
+        __m256i zero = _mm256_setzero_si256();
+        __m256i a = zero, b = zero, c = zero, d = zero;
+        __m128i total;
+        for (; n - i >= 128; i += 128) {
+            a = _mm256_add_epi64(a, _mm256_sad_epu8(
+                _mm256_loadu_si256((const __m256i *)(p + i)), zero));
+            b = _mm256_add_epi64(b, _mm256_sad_epu8(
+                _mm256_loadu_si256((const __m256i *)(p + i + 32)), zero));
+            c = _mm256_add_epi64(c, _mm256_sad_epu8(
+                _mm256_loadu_si256((const __m256i *)(p + i + 64)), zero));
+            d = _mm256_add_epi64(d, _mm256_sad_epu8(
+                _mm256_loadu_si256((const __m256i *)(p + i + 96)), zero));
+        }
+        a = _mm256_add_epi64(_mm256_add_epi64(a, b), _mm256_add_epi64(c, d));
+        for (; n - i >= 32; i += 32)
+            a = _mm256_add_epi64(a, _mm256_sad_epu8(
+                _mm256_loadu_si256((const __m256i *)(p + i)), zero));
+        total = _mm_add_epi64(_mm256_castsi256_si128(a), _mm256_extracti128_si256(a, 1));
+        total = _mm_add_epi64(total, _mm_srli_si128(total, 8));
+        s = (uint32_t)_mm_cvtsi128_si32(total);
+    }
+#endif
+    for (; i < n; i++)
         s += p[i];
     return (uint16_t)(s & 0xFFFF);
 }
 
-static uint32_t get32(const uint8_t *p)
+/* Fixed-size memcpy permits unaligned fields without aliasing violations. */
+static AIN_FORCEINLINE uint32_t get32(const uint8_t *p)
 {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    uint32_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
 }
 
-static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
-
-static void put32(uint8_t *p, uint32_t v)
+static AIN_FORCEINLINE uint16_t get16(const uint8_t *p)
 {
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
+    uint16_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
+}
+
+static AIN_FORCEINLINE void put32(uint8_t *p, uint32_t v)
+{
+    memcpy(p, &v, sizeof v);
 }
 
 /* ---------------- open / parse ---------------- */

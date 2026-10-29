@@ -5,11 +5,12 @@
 
 /* codec.c - AIN LZ77/Huffman codec.
  *
- * Decoder: instruction-by-instruction port of ain.exe module 1dd8:
+ * Decoder: based on an instruction-by-instruction port of ain.exe module 1dd8:
  *   020c bit reader | 02c0 symbol decode | 0379 CLC loader | 03f8 tree loader
  *   04a0 + 05c0 + 0555 table builder | 00cc main loop.
  * Module 1cc9 (per-file / solid data streams) behaves identically, verified
  * bit-exactly against 21 archives created by ain.exe 2.32.
+ * The lookup width and hot loop are optimized without changing code order.
  *
  * Encoder: writes streams that the original decoder accepts.  Canonical
  * Huffman codes are assigned in (length asc, symbol desc) order - the order
@@ -129,7 +130,7 @@ static void br_init(BitReader *br, const uint8_t *d, size_t n)
  * same order as the original byte refill (02c0/020c).  Only called while
  * cnt <= 32, so the 32-bit chunk can never shift bits out of the 64-bit
  * buffer; bytes past the end are zeros, exactly like br_fill_byte gave. */
-static void br_refill32(BitReader *br)
+static AIN_FORCEINLINE void br_refill32(BitReader *br)
 {
     uint32_t v = 0;
     size_t rem = br->n - br->pos;
@@ -148,7 +149,7 @@ static void br_refill32(BitReader *br)
 }
 
 /* max n here is 14 (dist class 15 extra), so a single refill suffices */
-static uint32_t br_read(BitReader *br, int n)
+static AIN_FORCEINLINE uint32_t br_read(BitReader *br, int n)
 {
     uint32_t v;
     if (n == 0)
@@ -161,11 +162,14 @@ static uint32_t br_read(BitReader *br, int n)
     return v;
 }
 
-/* ================= tree builder (exact port of 04a0+05c0+0555) ============ */
+/* ================= tree builder (based on 04a0+05c0+0555) ================ */
+
+#define TREE_LOOKUP_BITS 10
 
 typedef struct {
-    uint16_t lookup[256];      /* 8-bit fast lookup, word entries, 0 = empty */
+    uint16_t lookup[1 << TREE_LOOKUP_BITS]; /* 0 = empty */
     uint16_t nodes[1024];      /* node area, word indexed (byte off >> 1)    */
+    unsigned lookup_mask;
     const int *lens;
     int nsyms;
 } Tree;
@@ -199,13 +203,13 @@ static int tree_build(Tree *t, const int *lens, int n)
     int remaining[17], sym_cur;
     int order[AIN_SYMS_A];
     int node_next;                     /* allocation cursor in node arena */
+    int lookup_bits = 8;
     BuildFrame stack[64];
     int sp = 0;
 
     if (n > AIN_SYMS_A)
         return -4;                     /* all callers pass <= AIN_SYMS_A */
 
-    memset(t->lookup, 0, sizeof t->lookup);
     memset(t->nodes, 0, sizeof t->nodes);
     t->lens = lens;
     t->nsyms = n;
@@ -213,6 +217,12 @@ static int tree_build(Tree *t, const int *lens, int n)
     memset(len_hist, 0, sizeof len_hist);
     for (i = 0; i < n; i++)
         len_hist[lens[i] < 0x11 ? lens[i] : 0]++;
+    /* Avoid the larger table's setup cost when every code already fits. */
+    for (i = 9; i <= 15; i++)
+        if (len_hist[i])
+            lookup_bits = TREE_LOOKUP_BITS;
+    t->lookup_mask = (1u << lookup_bits) - 1;
+    memset(t->lookup, 0, (t->lookup_mask + 1) * sizeof t->lookup[0]);
     if (len_hist[0] == n)
         return -1;                       /* empty tree */
     kraft = 0;
@@ -269,15 +279,15 @@ static int tree_build(Tree *t, const int *lens, int n)
                 } else {
                     int sym = order[--sym_cur];
                     t->nodes[node_off >> 1] = (uint16_t)((-sym) & 0xFFFF);
-                    if (depth2 > 0x10)   /* deeper than the 8-bit lookup */
+                    if (depth2 > 2 * lookup_bits)
                         continue;
-                    {   /* replicate the leaf entry over every 8-bit prefix
+                    {   /* replicate the leaf entry over every lookup prefix
                          * that ends with this reversed code */
                         int rot = (depth2 + 2) >> 1, off;
                         uint16_t slot = rol16(revcode, rot);
                         uint16_t entry = (uint16_t)(sym | ((8 * codelen) << 8));
                         int stride = 1 << rot;
-                        for (off = slot; off < 0x200; off += stride)
+                        for (off = slot; off < 2 * (1 << lookup_bits); off += stride)
                             t->lookup[off >> 1] = entry;
                     }
                 }
@@ -285,9 +295,9 @@ static int tree_build(Tree *t, const int *lens, int n)
                 int new_off, child_base;
                 new_off = node_next;
                 t->nodes[node_off >> 1] = (uint16_t)new_off;
-                if (depth2 == 0x10) {    /* length 8: hand off to deep nodes */
-                    t->lookup[(revcode >> 8) & 0xFF] =
-                        (uint16_t)((new_off | 0xF800) & 0xFFFF);
+                if (depth2 == 2 * lookup_bits) {
+                    t->lookup[revcode >> (16 - lookup_bits)] =
+                        (uint16_t)(new_off | 0x8000 | (lookup_bits << 11));
                     new_off = (new_off & 0xFF) | (((new_off >> 8) & 7) << 8);
                     node_next = new_off;
                 }
@@ -305,25 +315,25 @@ static int tree_build(Tree *t, const int *lens, int n)
     return 0;
 }
 
-/* exact port of 1dd8:02c0 */
-static int tree_decode(Tree *t, BitReader *br)
+/* Original symbol ordering, with a wider lookup before the node walk. */
+static AIN_FORCEINLINE int tree_decode(const Tree *t, BitReader *br)
 {
     uint16_t entry;
     int node_slot;
-    if (br->cnt < 8)
+    if (br->cnt < TREE_LOOKUP_BITS)
         br_refill32(br);
-    entry = t->lookup[br->buf & 0xFF];
+    entry = t->lookup[br->buf & t->lookup_mask];
     if (entry == 0)
         return -1;                       /* unmapped slot */
-    if (entry <= 0x4777) {               /* short code: sym | len<<11 */
-        int ln = entry >> 11;
+    {
+        int ln = (entry >> 11) & 15;
         br->buf >>= ln;
         br->cnt -= ln;
+    }
+    if (entry < 0x8000) {                /* short code: sym | len<<11 */
         return entry & 0x7FF;
     }
     node_slot = entry & 0x7FF;           /* deep: node walk */
-    br->buf >>= 8;
-    br->cnt -= 8;
     for (;;) {
         uint32_t bit;
         if (!br->cnt)
@@ -394,14 +404,91 @@ static int load_tree(BitReader *br, int count, int *lens)
 }
 
 /* overlap-safe LZ77 copy; len <= AIN_MAXMATCH and dst has >= 256 bytes of
- * writable slack.  Pattern doubling: copy one period, then repeatedly
- * copy what is already materialized.  memcpy is used deliberately - a
- * hand-written overlapping vector loop was miscompiled by /O2 (loads
- * reordered across the stores they depend on), and memcpy's opacity
- * keeps the doubling sequence ordered.  Non-overlapping matches (dist
- * >= len) collapse to a single memcpy, optimized by the host C library. */
+ * writable slack. SIMD broadcasts 2/4/8/16-byte periods and copies long-distance
+ * or vector-period-aligned matches in vector steps (up to 31 bytes past len).
+ * Other short distances retain pattern doubling to avoid store-forwarding stalls.
+ * Compiler barriers prevent /O2 from moving overlapping loads before the stores
+ * they depend on, as happened in an earlier implementation. The fallback uses non-overlapping
+ * memcpy calls to materialize and then double one period.
+ * A one-byte period needs no dependent copies: memset broadcasts it. */
 static void lz_copy(uint8_t *dst, size_t dist, int len)
 {
+    if (dist == 1) {
+        memset(dst, dst[-1], (size_t)len);
+        return;
+    }
+#ifdef AIN_NEON
+    if (len >= 16 && dist <= 16 && (dist & (dist - 1)) == 0) {
+        uint8x16_t pattern;
+        int i;
+        if (dist == 2) {
+            uint16_t v;
+            memcpy(&v, dst - 2, sizeof v);
+            pattern = vreinterpretq_u8_u16(vdupq_n_u16(v));
+        } else if (dist == 4) {
+            uint32_t v;
+            memcpy(&v, dst - 4, sizeof v);
+            pattern = vreinterpretq_u8_u32(vdupq_n_u32(v));
+        } else if (dist == 8) {
+            uint64_t v;
+            memcpy(&v, dst - 8, sizeof v);
+            pattern = vreinterpretq_u8_u64(vdupq_n_u64(v));
+        } else {
+            pattern = vld1q_u8(dst - 16);
+        }
+        for (i = 0; i < len; i += 16)
+            vst1q_u8(dst + i, pattern);
+        return;
+    }
+    if (len >= 16 && (dist >= 128 || (dist & 15) == 0)) {
+        int i;
+        for (i = 0; i < len; i += 16) {
+            uint8x16_t v = vld1q_u8(dst + i - dist);
+            vst1q_u8(dst + i, v);
+#ifdef _MSC_VER
+            _ReadWriteBarrier();
+#else
+            __asm__ __volatile__("" ::: "memory");
+#endif
+        }
+        return;
+    }
+#elif defined(AIN_AVX2)
+    if (len >= 32 && dist <= 16 && (dist & (dist - 1)) == 0) {
+        __m256i pattern;
+        int i;
+        if (dist == 2) {
+            uint16_t v;
+            memcpy(&v, dst - 2, sizeof v);
+            pattern = _mm256_set1_epi16((short)v);
+        } else if (dist == 4) {
+            uint32_t v;
+            memcpy(&v, dst - 4, sizeof v);
+            pattern = _mm256_set1_epi32((int)v);
+        } else if (dist == 8) {
+            pattern = _mm256_broadcastq_epi64(_mm_loadl_epi64((const __m128i *)(dst - 8)));
+        } else {
+            pattern = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)(dst - 16)));
+        }
+        for (i = 0; i < len; i += 32)
+            _mm256_storeu_si256((__m256i *)(dst + i), pattern);
+        return;
+    }
+    if (len >= 32 && (dist >= 128 || (dist & 31) == 0)) {
+        int i;
+        for (i = 0; i < len; i += 32) {
+            __m256i v = _mm256_loadu_si256((const __m256i *)(dst + i - dist));
+            _mm256_storeu_si256((__m256i *)(dst + i), v);
+            /* Later loads may depend on this store when the match overlaps. */
+#ifdef _MSC_VER
+            _ReadWriteBarrier();
+#else
+            __asm__ __volatile__("" ::: "memory");
+#endif
+        }
+        return;
+    }
+#endif
     int done = len < (int)dist ? len : (int)dist;
     memcpy(dst, dst - dist, (size_t)done);
     while (done < len) {
@@ -469,7 +556,8 @@ static void report_block(FILE *out, size_t number, const DecodeBlock *b,
     fprintf(out, "\n");
 }
 
-static int decode_stream(const uint8_t *in, size_t inlen, AinBuf *out,
+/* Specialize the token loop for reporting and sized/unsized callers. */
+static AIN_FORCEINLINE int decode_stream(const uint8_t *in, size_t inlen, AinBuf *out,
                          FILE *report, size_t expected)
 {
     BitReader br;

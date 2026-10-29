@@ -68,6 +68,8 @@ implemented by hand.
 compatibility. It also provided several valuable suggestions to make the code
 more understandable and efficient.
 
+4. AI helped the ARM NEON portation of the AVX2 functions.
+
 # Enhancements
 
 The original AIN was released in 1996 for 16-bit DOS. After 30 years, there is
@@ -79,6 +81,9 @@ following optimizations have been made:
 
 * SIMD acceleration. I see a 2x speedup in most cases versus the original
 C version. See the Performance section.
+
+* Faster decompression and verification: adaptive 8/10-bit Huffman lookups and
+specialized repeated-byte matches.
 
 * Multithreading to greatly speed up compression; see `-jN`. It scales quite
 well thanks to its advanced architectural design.
@@ -222,6 +227,9 @@ Windows / MSVC (no other dependencies):
 build.bat            :: produces aint.exe
 ```
 
+Note: I used Visual Studio 2026 Community, you may have to modify `build.bat` if
+you use older version of Visual Studio.
+
 Windows / MinGW:
 
 ```
@@ -236,13 +244,35 @@ Linux / macOS, x86-64 or ARM64 (GCC or Clang, with make):
 ```
 make -f Makefile.gcc                 # produces aint
 make -f Makefile.gcc CC=clang        # explicit Clang selection
-make -f Makefile.gcc test-threads test-fs test-simd
+make -f Makefile.gcc test-threads test-fs test-simd test-decode test-checksum
 ```
 
 The makefile queries the compiler target: x86-64 adds `-mavx2`, while
 ARM64 uses baseline NEON without x86 compiler flags. A cross-compiler
 can be selected with `CC`; test binaries must run on their target host.
 The MSVC batch build remains x86-64.
+
+Focused decoder tests and a synthetic throughput benchmark (MSVC):
+
+```powershell
+.\tests\test-decode.ps1
+.\tests\test-decode.ps1 -Benchmark -Repeats 3 -BaselineCodec C:\path\to\original-codec.c
+.\tests\test-checksum.ps1
+.\tests\test-checksum.ps1 -Benchmark -Repeats 3 -BaselineArchive C:\path\to\original-archive.c
+```
+
+The tests cover overlapping matches, unaligned output, canonical codes through
+15 bits, exact bit consumption, sized decoding, appended output, analysis,
+and multiple Huffman blocks. The benchmark reports decoded MiB/s on small
+text and fifteen 8 MiB inputs, excluding encoding and file I/O. It reuses the
+output allocation; alternating baseline/current order reduces timing bias
+when `-Repeats` is used. Archive-level `t`/`x` timings also include allocation,
+checksums, and I/O and will show smaller gains.
+Checksum tests compare with a reference sum, including unaligned inputs,
+guard-page boundaries, empty inputs, and sums overflowing 32 bits.
+They also check little-endian field loads/stores at unaligned addresses and
+guard-page boundaries. Archive field helpers use inlined fixed-size `memcpy`
+for native little-endian access without alignment or aliasing violations.
 
 ## Usage
 
@@ -462,7 +492,7 @@ See the plugin documentation for installation, limits, and update semantics.
 dosexe/ain_original.exe   The original EXE.
 dosexe/ain_unpacked.exe   The unpacked EXE.
 src/ain.h       format constants, APIs
-src/codec.c     stream decoder (exact port of original) + encoder,
+src/codec.c     optimized format-compatible stream decoder + encoder,
                 incl. streaming multi-block encoder (ain_enc_*)
 src/thread.h    private worker interface
 src/thread.c    Win32 / pthread workers
