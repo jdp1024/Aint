@@ -5,6 +5,11 @@ Aint stands for **A**IN **I**s **N**ow **T**hreaded.
 It is a modern reimplementation of AIN, the DOS archiver, created through
 reverse engineering.
 
+## Special Greeting
+
+If you are the author(s) of the original AIN and happen to read this file, please
+leave me a message.
+
 # Introduction
 
 I was a big fan of AIN back in the DOS era. Hundreds of floppy disks were saved
@@ -251,28 +256,6 @@ The makefile queries the compiler target: x86-64 adds `-mavx2`, while
 ARM64 uses baseline NEON without x86 compiler flags. A cross-compiler
 can be selected with `CC`; test binaries must run on their target host.
 The MSVC batch build remains x86-64.
-
-Focused decoder tests and a synthetic throughput benchmark (MSVC):
-
-```powershell
-.\tests\test-decode.ps1
-.\tests\test-decode.ps1 -Benchmark -Repeats 3 -BaselineCodec C:\path\to\original-codec.c
-.\tests\test-checksum.ps1
-.\tests\test-checksum.ps1 -Benchmark -Repeats 3 -BaselineArchive C:\path\to\original-archive.c
-```
-
-The tests cover overlapping matches, unaligned output, canonical codes through
-15 bits, exact bit consumption, sized decoding, appended output, analysis,
-and multiple Huffman blocks. The benchmark reports decoded MiB/s on small
-text and fifteen 8 MiB inputs, excluding encoding and file I/O. It reuses the
-output allocation; alternating baseline/current order reduces timing bias
-when `-Repeats` is used. Archive-level `t`/`x` timings also include allocation,
-checksums, and I/O and will show smaller gains.
-Checksum tests compare with a reference sum, including unaligned inputs,
-guard-page boundaries, empty inputs, and sums overflowing 32 bits.
-They also check little-endian field loads/stores at unaligned addresses and
-guard-page boundaries. Archive field helpers use inlined fixed-size `memcpy`
-for native little-endian access without alignment or aliasing violations.
 
 ## Usage
 
