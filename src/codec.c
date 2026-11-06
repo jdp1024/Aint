@@ -405,8 +405,8 @@ static int load_tree(BitReader *br, int count, int *lens)
 }
 
 /* overlap-safe LZ77 copy; len <= AIN_MAXMATCH and dst has >= 256 bytes of
- * writable slack. SIMD broadcasts 2/4/8/16-byte periods and copies long-distance
- * or vector-period-aligned matches in vector steps (up to 31 bytes past len).
+ * writable slack. SIMD broadcasts short periods and copies long-distance or
+ * vector-period-aligned matches in vector steps (up to 31 bytes past len).
  * Other short distances retain pattern doubling to avoid store-forwarding stalls.
  * Compiler barriers prevent /O2 from moving overlapping loads before the stores
  * they depend on, as happened in an earlier implementation. The fallback uses non-overlapping
@@ -471,6 +471,21 @@ static void lz_copy(uint8_t *dst, size_t dist, int len)
         } else {
             pattern = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)(dst - 16)));
         }
+        for (i = 0; i < len; i += 32)
+            _mm256_storeu_si256((__m256i *)(dst + i), pattern);
+        return;
+    }
+    if (len >= 32 && dist <= 16) {
+        uint8_t indices[32];
+        __m256i mask;
+        __m256i seed, pattern;
+        int i;
+        for (i = 0; i < 32; i++)
+            indices[i] = (uint8_t)(16 - dist + i % dist);
+        mask = _mm256_loadu_si256((const __m256i *)indices);
+        seed = _mm256_broadcastsi128_si256(
+            _mm_loadu_si128((const __m128i *)(dst - 16)));
+        pattern = _mm256_shuffle_epi8(seed, mask);
         for (i = 0; i < len; i += 32)
             _mm256_storeu_si256((__m256i *)(dst + i), pattern);
         return;
@@ -1342,7 +1357,7 @@ static int lz_parse_ex(const uint8_t *in, size_t n, size_t emit_from,
         /* speculation for position i+1: its hash (carried: the scan /
          * insert / literal path at i+1 reuses it, it is never wasted when
          * i emits a literal) and a prefetch of the first candidate byte,
-         * issued so the miss overlaps the scan at i.  Only useful while
+         * issued so the miss overlaps the scan at i. Only useful while
          * literals chain: when i emits a match, position i+1 is consumed
          * by the skip and the speculation is thrown away, so it is gated
          * on the previous position being a literal (prev_lit). */
