@@ -170,6 +170,7 @@ typedef struct {
     uint16_t lookup[1 << TREE_LOOKUP_BITS]; /* 0 = empty */
     uint16_t nodes[1024];      /* node area, word indexed (byte off >> 1)    */
     unsigned lookup_mask;
+    unsigned lookup_bits;
     const int *lens;
     int nsyms;
 } Tree;
@@ -221,6 +222,7 @@ static int tree_build(Tree *t, const int *lens, int n)
     for (i = 9; i <= 15; i++)
         if (len_hist[i])
             lookup_bits = TREE_LOOKUP_BITS;
+    t->lookup_bits = (unsigned)lookup_bits;
     t->lookup_mask = (1u << lookup_bits) - 1;
     memset(t->lookup, 0, (t->lookup_mask + 1) * sizeof t->lookup[0]);
     if (len_hist[0] == n)
@@ -251,7 +253,6 @@ static int tree_build(Tree *t, const int *lens, int n)
         for (i = 0; i < 256; i++) { base2[i] = k; k += cnt2[i]; }
         for (i = 0; i < n; i++)
             order[base2[(~lens[i]) & 0xFF]++] = i;
-        (void)k;
     }
     {
         /* fill: pop order is (len asc, sym desc) - same as original */
@@ -320,7 +321,7 @@ static AIN_FORCEINLINE int tree_decode(const Tree *t, BitReader *br)
 {
     uint16_t entry;
     int node_slot;
-    if (br->cnt < TREE_LOOKUP_BITS)
+    if (br->cnt < (int)t->lookup_bits)
         br_refill32(br);
     entry = t->lookup[br->buf & t->lookup_mask];
     if (entry == 0)
@@ -927,10 +928,48 @@ static int sf_lengths(const uint64_t *freq, int nsyms, int maxdepth,
     return n;
 }
 
+static int huff_node_less(int a, int b, const uint64_t *weight)
+{
+    return weight[a] < weight[b] || (weight[a] == weight[b] && a < b);
+}
+
+static void huff_heap_push(int *heap, int *count, int node,
+                           const uint64_t *weight)
+{
+    int i = (*count)++;
+    while (i) {
+        int parent = (i - 1) >> 1;
+        if (!huff_node_less(node, heap[parent], weight))
+            break;
+        heap[i] = heap[parent];
+        i = parent;
+    }
+    heap[i] = node;
+}
+
+static int huff_heap_pop(int *heap, int *count, const uint64_t *weight)
+{
+    int result = heap[0], node = heap[--*count], i = 0;
+    while (i * 2 + 1 < *count) {
+        int child = i * 2 + 1;
+        if (child + 1 < *count &&
+            huff_node_less(heap[child + 1], heap[child], weight))
+            child++;
+        if (!huff_node_less(heap[child], node, weight))
+            break;
+        heap[i] = heap[child];
+        i = child;
+    }
+    if (*count)
+        heap[i] = node;
+    return result;
+}
+
 static int huff_lengths(const uint64_t *freq, int nsyms, int maxdepth, int *lens)
 {
     uint64_t weight[2 * AIN_SYMS_A - 1];
     int parent[2 * AIN_SYMS_A - 1], symbol[AIN_SYMS_A];
+    int heap[2 * AIN_SYMS_A - 1], heap_count = 0;
     int leaves = 0, nodes, i;
     memset(lens, 0, (size_t)nsyms * sizeof *lens);
     for (i = 0; i < nsyms; i++) {
@@ -938,6 +977,7 @@ static int huff_lengths(const uint64_t *freq, int nsyms, int maxdepth, int *lens
             symbol[leaves] = i;
             weight[leaves] = freq[i];
             parent[leaves++] = -1;
+            huff_heap_push(heap, &heap_count, leaves - 1, weight);
         }
     }
     if (leaves < 2) {
@@ -947,20 +987,13 @@ static int huff_lengths(const uint64_t *freq, int nsyms, int maxdepth, int *lens
     }
     nodes = leaves;
     while (nodes < 2 * leaves - 1) {
-        int a = -1, b = -1;
-        for (i = 0; i < nodes; i++) {
-            if (parent[i] >= 0)
-                continue;
-            if (a < 0 || weight[i] < weight[a]) {
-                b = a;
-                a = i;
-            } else if (b < 0 || weight[i] < weight[b]) {
-                b = i;
-            }
-        }
+        int a = huff_heap_pop(heap, &heap_count, weight);
+        int b = huff_heap_pop(heap, &heap_count, weight);
         weight[nodes] = weight[a] + weight[b];
         parent[nodes] = -1;
-        parent[a] = parent[b] = nodes++;
+        parent[a] = parent[b] = nodes;
+        huff_heap_push(heap, &heap_count, nodes, weight);
+        nodes++;
     }
     for (i = 0; i < leaves; i++) {
         int depth = 0, p = i;
