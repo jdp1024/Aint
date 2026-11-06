@@ -1337,7 +1337,7 @@ static int lz_parse_ex(const uint8_t *in, size_t n, size_t emit_from,
                                           * speculation be consumed) */
 
     /* update-speed / search-effort levels (see -u1..-u3) */
-    if (speed <= 1) {          /* 1: slow, higher compression */
+    if (speed <= 1 || speed == 9) { /* slow, higher compression */
         maxchain = 4096;
         lazychain = 256;
     } else if (speed == 2) {   /* 2: normal */
@@ -1708,7 +1708,7 @@ static int lz_reparse(const uint8_t *in, size_t n, size_t emit_from,
  * indexed regardless of the chosen path, so match availability is stable. */
 static int lz_optimal_reparse(const uint8_t *in, size_t n, size_t emit_from,
                               Tok *toks, size_t *ntok,
-                              uint64_t *freqA, uint64_t *freqB)
+                              uint64_t *freqA, uint64_t *freqB, int maxchain)
 {
     size_t size = n - emit_from, pos, count = 0;
     uint64_t *cost;
@@ -1753,7 +1753,7 @@ static int lz_optimal_reparse(const uint8_t *in, size_t n, size_t emit_from,
             int l;
             for (l = AIN_MINMATCH; l <= maxl; l++) prices[l] = INT_MAX;
             while (cand >= 0 && pos - (size_t)cand <= AIN_MAXDIST &&
-                   checks++ < 128) {
+                   checks++ < maxchain) {
                 int dist = (int)pos - cand, k = dist_class(dist);
                 if (full_cost <= suffix_cost[k])
                     break;              /* older distance classes cannot improve any edge */
@@ -1826,7 +1826,7 @@ static int emit_block(BitWriter *w, const uint8_t *in, size_t n,
         return emit_block_body(w, toks, ntok, freqA, freqB, final, 0);
     ain_buf_init(&best);
     ain_buf_init(&trial);
-    for (pass = 0; pass < (speed == 1 ? 6 : 4); pass++) {
+    for (pass = 0; pass < (speed == 1 || speed == 9 ? 6 : 4); pass++) {
         uint64_t fa[AIN_SYMS_A], fb[AIN_SYMS_B], bits;
         BitWriter candidate = *w;
         if (pass == 2) {
@@ -1847,7 +1847,8 @@ static int emit_block(BitWriter *w, const uint8_t *in, size_t n,
             }
         }
         if (pass == 4) {
-            if (lz_optimal_reparse(in, n, emit_from, toks, &ntok, freqA, freqB)) {
+            if (lz_optimal_reparse(in, n, emit_from, toks, &ntok,
+                                   freqA, freqB, speed == 9 ? 1024 : 128)) {
                 rc = -1;
                 break;
             }
@@ -1896,13 +1897,13 @@ int ain_encode_stream(const uint8_t *in, size_t inlen, AinBuf *out, int speed)
 
     memset(freqA, 0, sizeof freqA);
     memset(freqB, 0, sizeof freqB);
-    if (speed < 1 || speed > 3)
+    if (speed < 1 || (speed > 3 && speed != 9))
         speed = 2;
     if (lz_parse(in, inlen, &toks, &ntok, freqA, freqB, speed))
         return -1;
 
     bw_init(&w, out);
-    bw_write(&w, 1, 0);                  /* init bit */
+    bw_write(&w, 1, 0);
     rc = emit_block(&w, in, inlen, 0, toks, ntok, freqA, freqB, 1, speed);
     bw_flush(&w);
     free(toks);
@@ -2002,7 +2003,7 @@ AinEncS *ain_enc_open_mt(AinBuf *out, int speed, size_t chunk, unsigned threads)
     AinEncS *e = (AinEncS *)calloc(1, sizeof *e);
     if (!e)
         return NULL;
-    if (speed < 1 || speed > 3)
+    if (speed < 1 || (speed > 3 && speed != 9))
         speed = 2;
     if (chunk < 65536)
         chunk = 65536;                   /* keep reload overhead sane */
@@ -2020,7 +2021,7 @@ AinEncS *ain_enc_open_mt(AinBuf *out, int speed, size_t chunk, unsigned threads)
         if (threads > 256) threads = 256;
         /* Speed 1 also keeps shortest-path costs and predecessor tokens. */
         budget = ((size_t)256 << 20) /
-            ((speed == 1 ? 32 : 16) * (chunk + AIN_WINDOW));
+            ((speed == 1 || speed == 9 ? 32 : 16) * (chunk + AIN_WINDOW));
         if (threads > budget) threads = (unsigned)budget;
         if (!threads) threads = 1;
     }
@@ -2084,7 +2085,8 @@ static void enc_worker(void *arg)
                               job->speed, &ntok);
     if (!job->rc)
         job->rc = emit_block(&job->writer, job->input, job->n, job->history,
-                             job->toks, ntok, freqA, freqB, job->final, job->speed);
+                             job->toks, ntok, freqA, freqB, job->final,
+                             job->speed);
 #ifdef AIN_TEST_MT
     ain_test_worker_end(job->sequence);
 #endif

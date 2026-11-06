@@ -48,7 +48,7 @@ static void load_settings(void)
     settings.method = GetPrivateProfileIntA("AIN", "Method", 2, ini_path);
     settings.volume_kib = GetPrivateProfileIntA("AIN", "VolumeKiB", 0, ini_path);
     settings.threads = GetPrivateProfileIntA("AIN", "Threads", 0, ini_path);
-    if (settings.method < 1 || settings.method > 4)
+    if (settings.method < 1 || (settings.method > 4 && settings.method != 9))
         settings.method = 2;
     if (settings.volume_kib > 16383)
         settings.volume_kib = 0;
@@ -96,7 +96,10 @@ static INT_PTR CALLBACK config_dialog(HWND dialog, UINT msg, WPARAM wp, LPARAM l
         SendDlgItemMessageA(dialog, IDC_METHOD, CB_ADDSTRING, 0, (LPARAM)"2 - Normal");
         SendDlgItemMessageA(dialog, IDC_METHOD, CB_ADDSTRING, 0, (LPARAM)"3 - Fast");
         SendDlgItemMessageA(dialog, IDC_METHOD, CB_ADDSTRING, 0, (LPARAM)"4 - Store (uncompressed)");
-        SendDlgItemMessage(dialog, IDC_METHOD, CB_SETCURSEL, value->method - 1, 0);
+        SendDlgItemMessageA(dialog, IDC_METHOD, CB_ADDSTRING, 0,
+                            (LPARAM)"9 - Ultra (slowest)");
+        SendDlgItemMessage(dialog, IDC_METHOD, CB_SETCURSEL,
+                           value->method == 9 ? 4 : value->method - 1, 0);
         SetDlgItemInt(dialog, IDC_VOLUME, value->volume_kib, FALSE);
         SetDlgItemInt(dialog, IDC_THREADS, value->threads, FALSE);
         if (!center_dialog(dialog))
@@ -108,9 +111,10 @@ static INT_PTR CALLBACK config_dialog(HWND dialog, UINT msg, WPARAM wp, LPARAM l
         BOOL valid_volume, valid_threads;
         unsigned volume = GetDlgItemInt(dialog, IDC_VOLUME, &valid_volume, FALSE);
         unsigned threads = GetDlgItemInt(dialog, IDC_THREADS, &valid_threads, FALSE);
-        int method = (int)SendDlgItemMessage(dialog, IDC_METHOD, CB_GETCURSEL, 0, 0) + 1;
+        int selection = (int)SendDlgItemMessage(dialog, IDC_METHOD, CB_GETCURSEL, 0, 0);
+        int method = selection == 4 ? 9 : selection + 1;
         if (!valid_volume || volume > 16383 || !valid_threads || threads > 256 ||
-            method < 1 || method > 4) {
+            selection < 0 || selection > 4) {
             MessageBoxA(dialog, "Choose a method, a volume size of 0..16383 KiB, and 0..256 threads.",
                         "Invalid AIN settings", MB_OK | MB_ICONERROR);
             return TRUE;

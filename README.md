@@ -104,6 +104,8 @@ encoding as a fallback. `-m2` retains its normal initial match-search
 budget, while `-m3` retains its fast single-pass algorithm; created
 archives are decoder-compatible but are not guaranteed to be byte-identical
 to those produced by the original tool.
+`-m9` keeps the `-m1` search settings but raises the final optimal-parse
+candidate limit; it still writes the standard method-1 archive format.
 
 * Stream analysis to dump detailed information: everything you need to
 know about the internals of an AIN file. See the `s` command.
@@ -301,8 +303,9 @@ switches:
   -f<n>[K|M] | -fa   fragment size (plain number or K = KB, M = MB;
                      archives larger than it are split into
                      <name>.AIN, .001 ... .NNN volumes; a = no limit)
-  -m1..-m4           compression method (m1 = slow/best search, m2 =
-                     normal, m3 = fast, m4 = stored; default -m2)
+  -m1..-m4 | -m9     compression method (m1 = slow/best search, m2 =
+                     normal, m3 = fast, m4 = stored, m9 = deeper m1
+                     optimal-parse search; default -m2)
   -o<dir>            output dir: a/u = where the archive is written,
                      x = where files are extracted
   -r                 Recurse into subdirectories (a, u)

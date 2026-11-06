@@ -456,7 +456,8 @@ static DWORD WINAPI write_worker(void *arg)
     WriteJob *job = (WriteJob *)arg;
     job->result = ain_write_mt(job->path, job->settings.method, job->entries, job->count,
                               (unsigned long long)job->settings.volume_kib * 1024,
-                              job->settings.method > 3 ? 2 : job->settings.method,
+                              job->settings.method == 9 ? 9 :
+                                  job->settings.method > 3 ? 2 : job->settings.method,
                               job->password, job->settings.threads);
     return 0;
 }

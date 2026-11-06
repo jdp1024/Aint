@@ -29,6 +29,11 @@ static int expected_method = 3;
     printf("FAIL line %d: %s (Windows error %lu)\n", __LINE__, #condition, GetLastError()); \
     ++failures; } } while (0)
 
+static int method_selection(int method)
+{
+    return method == 9 ? 4 : method - 1;
+}
+
 static void path(char *dest, const char *dir, const char *name)
 {
     snprintf(dest, MAX_PATH, "%s\\%s", dir, name);
@@ -112,10 +117,12 @@ static BOOL CALLBACK find_dialog(HWND window, LPARAM arg)
     if (!IsWindowVisible(window))
         return TRUE;
     check_centered(window);
-    CHECK(SendDlgItemMessageA(window, IDC_METHOD, CB_GETCURSEL, 0, 0) == expected_method - 1);
+    CHECK(SendDlgItemMessageA(window, IDC_METHOD, CB_GETCURSEL, 0, 0) ==
+          method_selection(expected_method));
     CHECK(GetDlgItem(window, IDC_PASSWORD) == NULL);
     CHECK(GetDlgItem(window, IDC_PASSWORD_REPEAT) == NULL);
-    SendDlgItemMessageA(window, IDC_METHOD, CB_SETCURSEL, value->method - 1, 0);
+    SendDlgItemMessageA(window, IDC_METHOD, CB_SETCURSEL,
+                        method_selection(value->method), 0);
     SetDlgItemInt(window, IDC_VOLUME, value->volume, FALSE);
     SetDlgItemInt(window, IDC_THREADS, value->threads, FALSE);
     expected_method = value->method;
@@ -205,6 +212,18 @@ static DWORD WINAPI password_worker(void *arg)
 }
 
 static volatile LONG stop_passwords;
+
+static void check_method(const char *archive, int expected)
+{
+    unsigned char header[2];
+    FILE *file = fopen(archive, "rb");
+    CHECK(file != NULL);
+    if (!file)
+        return;
+    CHECK(fread(header, 1, sizeof header, file) == sizeof header);
+    CHECK((header[1] & 15) == expected);
+    CHECK(!fclose(file));
+}
 
 static DWORD WINAPI password_responder(void *arg)
 {
@@ -330,7 +349,8 @@ int main(int argc, char **argv)
     char profile[MAX_PATH], ini[MAX_PATH];
     unsigned char *data;
     unsigned random = 17;
-    int i, method, encrypted;
+    int i, method, encrypted, method_index;
+    static const int methods[] = { 1, 2, 3, 4, 9 };
     HANDLE handle;
     tHeaderData legacy;
     tHeaderDataEx header;
@@ -377,12 +397,14 @@ int main(int argc, char **argv)
     }
     api.progress(INVALID_HANDLE_VALUE, progress);
 
-    for (method = 1; method <= 4; ++method) {
+    for (method_index = 0; method_index < 5; ++method_index) {
+        method = methods[method_index];
         snprintf(temp, sizeof temp, "method%d.ain", method);
         path(archive, root, temp);
         configure(method, 0, 2);
         CHECK(api.pack(archive, NULL, input, all_files, PK_PACK_SAVE_PATHS) == 0);
         CHECK(api.detect(archive));
+        check_method(archive, method == 9 ? 1 : method);
         progressed = 0;
         check_archive(archive, PK_EXTRACT, 3);
         CHECK(progressed == 480000);
@@ -412,7 +434,8 @@ int main(int argc, char **argv)
     printf("PASS replacement, subpaths, flattening, deletion\n");
 
     for (encrypted = 0; encrypted <= 1; ++encrypted) {
-        for (method = 1; method <= 4; ++method) {
+        for (method_index = 0; method_index < 5; ++method_index) {
+            method = methods[method_index];
             HANDLE responder = NULL;
             if (encrypted) {
                 InterlockedExchange(&stop_passwords, 0);

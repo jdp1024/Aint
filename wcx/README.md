@@ -39,7 +39,8 @@ Or build, test, and package separately:
 
 Or run `.\wcx\test.ps1` to build and test both architectures. Test executables
 simulate the WCX host, operate the real configuration dialog automatically,
-and verify roundtrips for methods 1..4, serial/automatic/explicit workers,
+and verify roundtrips for methods 1..4 and ultra method 9,
+serial/automatic/explicit workers,
 passwords, split-volume size limits, updates, deletion, cancellation, checksum
 errors, rollback, and the original split-volume fixtures.
 
@@ -73,7 +74,7 @@ plugin. Alternatively:
 
 | Setting | Values |
 |---|---|
-| Compression | 1 best/slow; 2 normal (default); 3 fast; 4 store |
+| Compression | 1 best/slow; 2 normal (default); 3 fast; 4 store; 9 ultra |
 | Volume size | KiB; 0 = single archive (default), 1..16383 = split |
 | Worker threads | 0 = automatic (default), 1 = serial, 2..256 = explicit |
 

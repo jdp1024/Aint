@@ -48,8 +48,9 @@ static void usage(void)
             "switches ( '-' prefix; '/' also accepted on Windows):\n"
             "  -f<n>[K|M]|-fa  split archive into <name>.AIN, .001..NNN volumes\n"
             "                  of n KB (plain or K) / MB (M); a = no limit\n"
-            "  -m1..-m4        compression method (m1 = slow/best, m2 =\n"
-            "                  normal, m3 = fast, m4 = stored; default -m2)\n"
+            "  -m1..-m4, -m9  compression method (-m1 = slow/best, -m2 =\n"
+            "                  normal, -m3 = fast, -m4 = stored, -m9 =\n"
+            "                  ultra compression; default -m2)\n"
             "  -o<dir>         output dir (a,u: where the archive is written;\n"
             "                  x: where files are extracted)\n"
             "  -r              Recurse subdirectories (a,u)\n"
@@ -68,8 +69,10 @@ static void usage(void)
             "                  for the password on stdin\n"
             "\n"
             "notes:\n"
-            "  -m1/-m2/-m3 differ in encoder search effort (see -u); all\n"
-            "     write the same solid-stream format; -u<n> overrides\n"
+            "  -m1/-m2/-m3 differ in encoder search effort (see -u); -m9\n"
+            "     uses the -m1 parse with a deeper final optimal-parse search.\n"
+            "     -m9 archives use standard method-1 format; -u<n> overrides\n"
+            "     the encoder search effort\n"
             "  names are stored as given on the command line\n"
             "  x: on Windows drive-qualified names restore to that exact\n"
             "     path; with -o or on POSIX the drive prefix is stripped\n"
@@ -482,12 +485,12 @@ static int open_archive(AinArchive *a, const char *arch, char *used, size_t n)
 /* ---------------- command implementations ---------------- */
 
 /* effective encoder effort: explicit -u wins, else the method's inherent
- * speed (m1 = slow/best, m2 = normal, m3 = fast) */
+ * speed (m1/m9 = slow/best, m2 = normal, m3 = fast) */
 static int eff_speed(int speed_given, int speed, int method)
 {
     if (speed_given)
         return speed;
-    return method == 1 ? 1 : method == 3 ? 3 : 2;
+    return method == 9 ? 9 : method == 1 ? 1 : method == 3 ? 3 : 2;
 }
 
 /* ---------------- garble password handling ----------------
@@ -793,8 +796,12 @@ int main(int argc, char **argv)
             {
                 long requested = (c == 'u' && !val[0]) ? 1 : switch_number(val);
                 long minimum = (c == 'm' || c == 'u') ? 1 : 0;
-                long maximum = c == 'm' ? 4 : c == 'u' ? 3 : c == 'q' ? 2 : 256;
+                long maximum = c == 'm' ? 9 : c == 'u' ? 3 : c == 'q' ? 2 : 256;
 
+                if (c == 'm' && requested > 4 && requested != 9) {
+                    fprintf(stderr, "error: bad -m switch %s (expected 1..4 or 9)\n", s);
+                    return 2;
+                }
                 if (requested < minimum ||
                     (c != 'j' && val[0] && val[1])) {
                     fprintf(stderr, "error: bad -%c switch %s\n", c, s);

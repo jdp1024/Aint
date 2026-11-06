@@ -39,7 +39,7 @@
 
 /* methods (header byte 1 & 0x0F) */
 #define AIN_M_STORE      4             /* raw stored, per-file segments          */
-/* methods 1..3: LZ77 codec; multiple files share one solid stream             */
+/* Methods 1..3 use LZ77; ultra -m9 uses mode 1 and stores method 1.           */
 
 /* ---------------- codec (modules 1dd8 / 1cc9, identical) ---------------- */
 
@@ -82,9 +82,11 @@ int ain_analyze_stream(const uint8_t *in, size_t inlen, AinBuf *out, FILE *repor
  * Inputs above INT_MAX bytes return -1; use streaming for larger inputs. */
 int ain_encode_stream(const uint8_t *in, size_t inlen, AinBuf *out, int speed);
 /* speed: 1 = slow, deeper match search; 2 = normal; 3 = fast, looser search.
+ * Internal speed 9 selects the -m9 final optimal-parse search budget.
  * Speeds 1 and 2 compare complete block costs using alternative trees and
  * a bounded bit-cost reparse. Speed 1 additionally tries one optimal parse
- * under refined estimated code costs (128 candidates/position).
+ * under refined estimated code costs (128 candidates/position); mode 9 uses
+ * the same speed with 1024 candidates/position.
  * All levels use the same decoder-compatible format. */
 
 /* Streaming multi-block encoder: feed bytes incrementally; every `chunk`
@@ -223,7 +225,9 @@ int  ain_extract(AinArchive *a, const char *dest,
 int  ain_test(AinArchive *a, const char **pats, int npats);
 
 /* entry-based container writer: builds a complete archive from in-memory
- * file entries (used by create/update/delete). frag>0 writes indexed volumes
+ * file entries (used by create/update/delete). method 9 selects the extended
+ * best-compression parse and is stored as standard method 1. frag>0 writes
+ * indexed volumes
  * <base>.AIN, .001..NNN. n=0 writes a single empty archive.
  * speed: encoder effort 1..3.
  * pw != NULL && *pw: garble the data region, set header[3] bit 0x80 and

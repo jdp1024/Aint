@@ -1773,13 +1773,17 @@ int ain_write_mt(const char *archpath, int method, const AinEnt *ents, int n,
     FILE *f;
     AinBuf data, idx, recs;
     uint32_t *offs;
-    int i, rc = 0, g_on = 0;
+    int i, rc = 0, g_on = 0, m9 = method == 9;
     uint16_t gseed[3] = { 0 };
     uint32_t ts_now;
     uint8_t h[AIN_HDR_SIZE];
 
+    if (m9)
+        method = 1;
+    if (m9 && speed == 1)
+        speed = 9;
     if (n < 0 || n > 65535 || method < 1 || method > 4 ||
-        speed < 1 || speed > 3 || threads > 256)
+        speed < 1 || ((speed > 3) && !(m9 && speed == 9)) || threads > 256)
         return -1;
     if (frag && n)
         return write_indexed_volumes(archpath, method, ents, NULL, NULL, n, frag,
@@ -1815,8 +1819,7 @@ int ain_write_mt(const char *archpath, int method, const AinEnt *ents, int n,
             rc = ain_encode_stream(raw.p, raw.len, &data, speed);
         } else {
             AinEncS *encoder = ain_enc_open_mt(&data, speed,
-                                              speed <= 2 ? 65536 : 2097152,
-                                              threads);
+                speed <= 2 || speed == 9 ? 65536 : 2097152, threads);
             rc = encoder ? ain_enc_feed(encoder, raw.p, raw.len) : -1;
             if (!rc)
                 rc = ain_enc_finish(encoder);
@@ -2281,7 +2284,8 @@ static int write_indexed_volumes(const char *archpath, int method,
     if (raw_limit > 64u * 1024u * 1024u)
         raw_limit = 64u * 1024u * 1024u;
     if (method != AIN_M_STORE) {
-        size_t chunk = speed <= 2 ? AIN_CHUNK_ADAPTIVE : AIN_CHUNK;
+        size_t chunk = speed <= 2 || speed == 9 ?
+            AIN_CHUNK_ADAPTIVE : AIN_CHUNK;
         if (raw_limit >= chunk)
             raw_limit -= raw_limit % chunk;
     }
@@ -2364,7 +2368,8 @@ static int write_indexed_volumes(const char *archpath, int method,
             if (method != AIN_M_STORE && !encoder) {
                 cache.len = 0;
                 encoder = ain_enc_open_mt(&cache, speed,
-                    speed <= 2 ? AIN_CHUNK_ADAPTIVE : AIN_CHUNK, threads);
+                    speed <= 2 || speed == 9 ?
+                        AIN_CHUNK_ADAPTIVE : AIN_CHUNK, threads);
                 if (!encoder)
                     goto memory_error;
             }
@@ -2379,7 +2384,8 @@ retry:
                 size_t index_reserve = trial_idx.len ? trial_idx.len : idx.len;
                 size_t budget = capacity > index_reserve + 128 ?
                     capacity - index_reserve - 128 : 0;
-                size_t chunk = speed <= 2 ? AIN_CHUNK_ADAPTIVE : AIN_CHUNK;
+                size_t chunk = speed <= 2 || speed == 9 ?
+                    AIN_CHUNK_ADAPTIVE : AIN_CHUNK;
                 size_t candidate = accepted + take;
                 if (candidate < accepted + available &&
                     accepted + available - candidate >= chunk - candidate % chunk)
@@ -2569,7 +2575,7 @@ int ain_create_mt(const char *archpath, int method, const char **names, int nfil
     AinEncS *enc = NULL;
     uint8_t *attr;
     uint32_t *ts, *osz;
-    int i, rc = 0, output_open = 0;
+    int i, rc = 0, output_open = 0, m9 = method == 9;
     int solid = method != AIN_M_STORE;
     int have_g = pw && *pw;
     uint32_t local_idxoff;
@@ -2580,6 +2586,10 @@ int ain_create_mt(const char *archpath, int method, const char **names, int nfil
     AinProgress progress;
     double started = ain_fs_time();
 
+    if (m9)
+        method = 1;
+    if (m9 && speed == 1)
+        speed = 9;
     if (started < 0 || nfiles <= 0 || method < 1 || method > 4)
         return -1;
     attr = (uint8_t *)calloc((size_t)nfiles, sizeof *attr);
@@ -2633,8 +2643,8 @@ int ain_create_mt(const char *archpath, int method, const char **names, int nfil
     }
     if (solid) {
         enc = ain_enc_open_mt(&eout, speed,
-                             speed == 1 || speed == 2 ? AIN_CHUNK_ADAPTIVE : AIN_CHUNK,
-                             threads);
+            speed == 1 || speed == 2 || speed == 9 ?
+                AIN_CHUNK_ADAPTIVE : AIN_CHUNK, threads);
         if (!enc) {
             fprintf(stderr, "error: cannot initialize encoder\n");
             rc = -2;
