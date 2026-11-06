@@ -106,6 +106,8 @@ archives are decoder-compatible but are not guaranteed to be byte-identical
 to those produced by the original tool.
 `-m9` keeps the `-m1` search settings but raises the final optimal-parse
 candidate limit; it still writes the standard method-1 archive format.
+`-m9` is usually 2x slower than `-m1` and gains only very small compression
+ratio benefit.
 
 * Stream analysis to dump detailed information: everything you need to
 know about the internals of an AIN file. See the `s` command.
@@ -204,6 +206,9 @@ single-threaded mode, but its compression ratio is poor.
 
 So, basically, we win on both speed (thanks to multithreading) and compression
 ratio.
+
+`-m9` result is not included. It brings about less than 0.5% extra compression
+ratio and is usually 2x slower than `-m1`.
 
 ## Known Issues
 
