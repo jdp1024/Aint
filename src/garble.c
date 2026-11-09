@@ -35,6 +35,15 @@
 #if defined(__AVX2__) || defined(_M_AVX2)
 #include <immintrin.h>
 #define AIN_GARBLE_AVX2 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#ifdef _MSC_VER
+#include <arm64_neon.h>
+#else
+#include <arm_neon.h>
+#endif
+#define AIN_GARBLE_NEON 1
+#endif
+#if defined(AIN_GARBLE_AVX2) || defined(AIN_GARBLE_NEON)
 #ifdef _MSC_VER
 #define AIN_GARBLE_NOINLINE __declspec(noinline)
 #define AIN_GARBLE_INLINE __forceinline
@@ -46,7 +55,7 @@
 
 /* advance the chain one word; returns the new c (output word) */
 static
-#ifdef AIN_GARBLE_AVX2
+#if defined(AIN_GARBLE_AVX2) || defined(AIN_GARBLE_NEON)
 AIN_GARBLE_INLINE
 #endif
 uint16_t chain_step(uint16_t *pa, uint16_t *pb, uint16_t *pc)
@@ -62,13 +71,18 @@ uint16_t chain_step(uint16_t *pa, uint16_t *pb, uint16_t *pc)
     return *pc;
 }
 
-#ifdef AIN_GARBLE_AVX2
-static AIN_GARBLE_NOINLINE size_t garble_avx2_blocks(AinGarbleSt *g,
-                                                      uint8_t *p, size_t n)
+#if defined(AIN_GARBLE_AVX2) || defined(AIN_GARBLE_NEON)
+static AIN_GARBLE_NOINLINE size_t garble_vector_blocks(AinGarbleSt *g,
+                                                        uint8_t *p, size_t n)
 {
+#ifdef AIN_GARBLE_AVX2
     uint16_t keys[16];
+#else
+    uint16_t keys[8];
+#endif
     uint16_t a = g->a, b = g->b, c = g->c;
     size_t i = 0;
+#ifdef AIN_GARBLE_AVX2
     while (n - i >= 32) {
         __m256i data;
         size_t k;
@@ -80,6 +94,19 @@ static AIN_GARBLE_NOINLINE size_t garble_avx2_blocks(AinGarbleSt *g,
         _mm256_storeu_si256((__m256i *)(p + i), data);
         i += 32;
     }
+#else
+    while (n - i >= 16) {
+        uint8x16_t data;
+        size_t k;
+        for (k = 0; k < 8; k++)
+            keys[k] = chain_step(&a, &b, &c);
+        data = vld1q_u8(p + i);
+        data = veorq_u8(data,
+                        vreinterpretq_u8_u16(vld1q_u16(keys)));
+        vst1q_u8(p + i, data);
+        i += 16;
+    }
+#endif
     g->a = a;
     g->b = b;
     g->c = c;
@@ -93,7 +120,7 @@ void ain_garble_seed(const char *pw, uint16_t seed[3])
     uint16_t a, b, c;
     size_t n = strlen(pw), i;
     int r, g;
-#ifdef AIN_GARBLE_AVX2
+#if defined(AIN_GARBLE_AVX2) || defined(AIN_GARBLE_NEON)
     uint16_t keys[48];
 #endif
 
@@ -112,6 +139,16 @@ void ain_garble_seed(const char *pw, uint16_t seed[3])
             __m256i key = _mm256_loadu_si256((const __m256i *)(keys + i));
             _mm256_storeu_si256((__m256i *)(buf + 2 * i),
                                 _mm256_xor_si256(data, key));
+        }
+    }
+#elif defined(AIN_GARBLE_NEON)
+    {
+        for (i = 0; i < 48; i++)
+            keys[i] = chain_step(&a, &b, &c);
+        for (i = 0; i < 48; i += 8) {
+            uint8x16_t data = vld1q_u8(buf + 2 * i);
+            uint8x16_t key = vreinterpretq_u8_u16(vld1q_u16(keys + i));
+            vst1q_u8(buf + 2 * i, veorq_u8(data, key));
         }
     }
 #else
@@ -164,9 +201,13 @@ void ain_garble_run(AinGarbleSt *g, uint8_t *p, size_t n)
         i = 1;
         g->hi_pending = 0;
     }
+#if defined(AIN_GARBLE_AVX2) || defined(AIN_GARBLE_NEON)
 #ifdef AIN_GARBLE_AVX2
     if (n - i >= 32)
-        i += garble_avx2_blocks(g, p + i, n - i);
+#else
+    if (n - i >= 16)
+#endif
+        i += garble_vector_blocks(g, p + i, n - i);
 #endif
     while (i < n) {
         uint16_t w = chain_step(&g->a, &g->b, &g->c);
