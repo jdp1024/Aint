@@ -32,20 +32,60 @@
  */
 #include <string.h>
 #include "ain.h"
+#if defined(__AVX2__) || defined(_M_AVX2)
+#include <immintrin.h>
+#define AIN_GARBLE_AVX2 1
+#ifdef _MSC_VER
+#define AIN_GARBLE_NOINLINE __declspec(noinline)
+#define AIN_GARBLE_INLINE __forceinline
+#else
+#define AIN_GARBLE_NOINLINE __attribute__((noinline))
+#define AIN_GARBLE_INLINE inline __attribute__((always_inline))
+#endif
+#endif
 
 /* advance the chain one word; returns the new c (output word) */
-static uint16_t chain_step(uint16_t *pa, uint16_t *pb, uint16_t *pc)
+static
+#ifdef AIN_GARBLE_AVX2
+AIN_GARBLE_INLINE
+#endif
+uint16_t chain_step(uint16_t *pa, uint16_t *pb, uint16_t *pc)
 {
     unsigned nd = (unsigned)*pa + 1;
     unsigned k1 = nd >> 16;
-    unsigned long long nb = (unsigned long long)*pb + *pa + k1;
-    unsigned k2 = (unsigned)(nb >> 16);
-    unsigned nc = (unsigned)(*pc) + *pb + k2;
+    unsigned nb = (unsigned)*pb + *pa + k1;
+    unsigned k2 = nb >> 16;
+    unsigned nc = (unsigned)*pc + *pb + k2;
     *pa = (uint16_t)nd;
     *pb = (uint16_t)nb;
     *pc = (uint16_t)nc;
     return *pc;
 }
+
+#ifdef AIN_GARBLE_AVX2
+static AIN_GARBLE_NOINLINE size_t garble_avx2_blocks(AinGarbleSt *g,
+                                                      uint8_t *p, size_t n)
+{
+    uint16_t keys[16];
+    uint16_t a = g->a, b = g->b, c = g->c;
+    size_t i = 0;
+    while (n - i >= 32) {
+        __m256i data;
+        size_t k;
+        for (k = 0; k < 16; k++)
+            keys[k] = chain_step(&a, &b, &c);
+        data = _mm256_loadu_si256((const __m256i *)(p + i));
+        data = _mm256_xor_si256(data,
+                               _mm256_loadu_si256((const __m256i *)keys));
+        _mm256_storeu_si256((__m256i *)(p + i), data);
+        i += 32;
+    }
+    g->a = a;
+    g->b = b;
+    g->c = c;
+    return i;
+}
+#endif
 
 void ain_garble_seed(const char *pw, uint16_t seed[3])
 {
@@ -53,6 +93,9 @@ void ain_garble_seed(const char *pw, uint16_t seed[3])
     uint16_t a, b, c;
     size_t n = strlen(pw), i;
     int r, g;
+#ifdef AIN_GARBLE_AVX2
+    uint16_t keys[48];
+#endif
 
     memset(buf, 0, sizeof buf);
     memcpy(buf, pw, n < sizeof buf ? n : sizeof buf);
@@ -60,11 +103,24 @@ void ain_garble_seed(const char *pw, uint16_t seed[3])
     b = (uint16_t)(int8_t)buf[0];            /* mov al,byte / cbw */
     a = (uint16_t)(int8_t)buf[1];
     for (r = 0; r < 9; r++)
+#ifdef AIN_GARBLE_AVX2
+    {
+        for (i = 0; i < 48; i++)
+            keys[i] = chain_step(&a, &b, &c);
+        for (i = 0; i < 48; i += 16) {
+            __m256i data = _mm256_loadu_si256((const __m256i *)(buf + 2 * i));
+            __m256i key = _mm256_loadu_si256((const __m256i *)(keys + i));
+            _mm256_storeu_si256((__m256i *)(buf + 2 * i),
+                                _mm256_xor_si256(data, key));
+        }
+    }
+#else
         for (i = 0; i < 48; i++) {
             uint16_t w = (uint16_t)(buf[2*i] | (buf[2*i+1] << 8)) ^ chain_step(&a, &b, &c);
             buf[2*i]     = (uint8_t)w;
             buf[2*i + 1] = (uint8_t)(w >> 8);
         }
+#endif
     /* fold into 3 carry lanes: lo=words 3g+2, mid=words 3g+1, hi=words 3g */
     {
         uint16_t lo = 0, mid = 0, hi = 0;
@@ -108,6 +164,10 @@ void ain_garble_run(AinGarbleSt *g, uint8_t *p, size_t n)
         i = 1;
         g->hi_pending = 0;
     }
+#ifdef AIN_GARBLE_AVX2
+    if (n - i >= 32)
+        i += garble_avx2_blocks(g, p + i, n - i);
+#endif
     while (i < n) {
         uint16_t w = chain_step(&g->a, &g->b, &g->c);
         p[i++] ^= (uint8_t)w;
