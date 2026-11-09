@@ -177,10 +177,9 @@ typedef struct {
 
 static uint16_t rol16(uint16_t v, int c)
 {
+    uint32_t value = v;
     c &= 15;
-    if (!c)
-        return v;
-    return (uint16_t)((v << c) | (v >> (16 - c)));
+    return (uint16_t)((value << c) | (value >> ((16 - c) & 15)));
 }
 
 /* One frame of the explicit stack that emulates the original's recursive
@@ -198,7 +197,7 @@ typedef struct {
 #define TASK_FILL 0
 #define TASK_NODE 1
 
-static int tree_build(Tree *t, const int *lens, int n)
+static int tree_build(Tree *__restrict t, const int *__restrict lens, int n)
 {
     int len_hist[17], i, kraft, kraft_prev;
     int remaining[17], sym_cur;
@@ -843,7 +842,7 @@ static uint32_t bitrev(uint32_t v, int n)
 
 /* canonical codes matching the original builder's assignment:
  * lengths ascending; within a length, LARGER symbol gets the SMALLER code. */
-static void canon_codes(const int *lens, int n, uint32_t *code)
+static void canon_codes(const int *__restrict lens, int n, uint32_t *__restrict code)
 {
     int cnt[17], i, l;
     uint32_t next[18];
@@ -867,8 +866,9 @@ static void canon_codes(const int *lens, int n, uint32_t *code)
 
 /* ---- length assignment: Shannon-Fano split with capacity guard.
  * Produces a complete (Kraft == 1) tree with max depth maxdepth. */
-static void sf_rec(const int *syms, const uint64_t *fw, int i, int j, int depth,
-                   int maxdepth, int *lens, const uint64_t *pre)
+static void sf_rec(const int *__restrict syms, const uint64_t *__restrict fw,
+                   int i, int j, int depth, int maxdepth, int *__restrict lens,
+                   const uint64_t *__restrict pre)
 {
     int split, lo, hi, cap, c0;
     uint64_t total, half, target;
@@ -915,8 +915,8 @@ static void sf_rec(const int *syms, const uint64_t *fw, int i, int j, int depth,
 
 /* freq[] indexed by symbol; writes lens[] (complete, depth <= maxdepth).
  * Returns number of assigned symbols. */
-static int sf_lengths(const uint64_t *freq, int nsyms, int maxdepth,
-                      int *lens, int *lens2 /* scratch none */)
+static int sf_lengths(const uint64_t *__restrict freq, int nsyms, int maxdepth,
+                      int *__restrict lens, int *lens2 /* scratch none */)
 {
     int syms[300], n = 0, i;
     uint64_t pre[301];
@@ -980,7 +980,8 @@ static int huff_heap_pop(int *heap, int *count, const uint64_t *weight)
     return result;
 }
 
-static int huff_lengths(const uint64_t *freq, int nsyms, int maxdepth, int *lens)
+static int huff_lengths(const uint64_t *__restrict freq, int nsyms,
+                        int maxdepth, int *__restrict lens)
 {
     uint64_t weight[2 * AIN_SYMS_A - 1];
     int parent[2 * AIN_SYMS_A - 1], symbol[AIN_SYMS_A];
@@ -1051,9 +1052,10 @@ static int run_sym(int chunk)
 
 /* scan (hist) or write the body; clc_code must arrive bit-reversed
  * (emit_tree does that once per tree instead of once per token) */
-static void emit_tree_body(BitWriter *w, const int *lens, int limit,
-                           const uint32_t *clc_code, const int *clc_len,
-                           int hist_only, uint64_t *clc_freq)
+static void emit_tree_body(BitWriter *w, const int *__restrict lens, int limit,
+                           const uint32_t *__restrict clc_code,
+                           const int *__restrict clc_len, int hist_only,
+                           uint64_t *__restrict clc_freq)
 {
     int i = 0;
     while (i < limit) {
@@ -1167,8 +1169,9 @@ static __inline int lz_hash(const uint8_t *p)
     return (int)((key * 2654435761u) >> 19);
 }
 
-static void lz_insert_range(const uint8_t *in, size_t n, size_t p, size_t end,
-                            int *head, int *prev)
+static void lz_insert_range(const uint8_t *__restrict in, size_t n,
+                            size_t p, size_t end, int *__restrict head,
+                            int *__restrict prev)
 {
     for (; end - p >= 8 && n - p >= 10; p += 8) {
         uint32_t hashes[8];
@@ -1322,10 +1325,10 @@ static __inline int candidate_matches(const uint8_t *a, int bestlen,
  * emit_from; earlier positions are still indexed into the match chains.
  * toks has room for n-emit_from entries; prev has min(n, AIN_WINDOW).
  * Used by the multi-block encoder to carry window history across blocks. */
-static int lz_parse_ex(const uint8_t *in, size_t n, size_t emit_from,
-                       Tok *toks, int *prev,
-                       uint64_t *freqA, uint64_t *freqB, int speed,
-                       size_t *out_ntok)
+static int lz_parse_ex(const uint8_t *__restrict in, size_t n, size_t emit_from,
+                       Tok *__restrict toks, int *__restrict prev,
+                       uint64_t *__restrict freqA, uint64_t *__restrict freqB,
+                       int speed, size_t *__restrict out_ntok)
 {
     size_t ntok = 0;
     int head[8192];
@@ -1524,9 +1527,9 @@ static int lz_parse(const uint8_t *in, size_t n, Tok **out_toks, size_t *out_nto
  * terminator (class-15 symbol + extra 0x3FFF + flag: 1 = end of stream,
  * 0 = reload both trees and continue).  freq arrays are modified in place
  * (degenerate-case padding). */
-static int emit_block_body(BitWriter *w, const Tok *toks, size_t ntok,
-                           uint64_t *freqA, uint64_t *freqB, int final,
-                           int huffman)
+static int emit_block_body(BitWriter *w, const Tok *__restrict toks,
+                           size_t ntok, uint64_t *__restrict freqA,
+                           uint64_t *__restrict freqB, int final, int huffman)
 {
     int lensA[AIN_SYMS_A] = {0}, lensB[AIN_SYMS_B] = {0};
     uint32_t codeA[AIN_SYMS_A], codeB[AIN_SYMS_B];
@@ -1602,9 +1605,11 @@ static int emit_block_body(BitWriter *w, const Tok *toks, size_t ntok,
 
 typedef struct { int len, dist, saved; } CostMatch;
 
-static CostMatch lz_cost_match(const uint8_t *in, size_t n, size_t pos,
-                               const int *head, const int *prev,
-                               const int *costA, const int *costB, int maxchain)
+static CostMatch lz_cost_match(const uint8_t *__restrict in, size_t n,
+                               size_t pos, const int *__restrict head,
+                               const int *__restrict prev,
+                               const int *__restrict costA,
+                               const int *__restrict costB, int maxchain)
 {
     CostMatch best = {0, 0, 0};
     int seen[16] = {0}, prefix[AIN_MAXMATCH + 1], filled = 0;
@@ -1663,8 +1668,9 @@ static void lz_estimate_costs(const uint64_t *freqA, const uint64_t *freqB,
         if (!costB[i]) costB[i] = 15;
 }
 
-static int lz_reparse(const uint8_t *in, size_t n, size_t emit_from,
-                      Tok *toks, size_t *ntok, uint64_t *freqA, uint64_t *freqB)
+static int lz_reparse(const uint8_t *__restrict in, size_t n, size_t emit_from,
+                      Tok *__restrict toks, size_t *__restrict ntok,
+                      uint64_t *__restrict freqA, uint64_t *__restrict freqB)
 {
     int costA[AIN_SYMS_A], costB[AIN_SYMS_B], head[8192];
     int *prev = (int *)malloc(AIN_WINDOW * sizeof *prev);
@@ -1706,9 +1712,11 @@ static int lz_reparse(const uint8_t *in, size_t n, size_t emit_from,
 
 /* Shortest path under fixed estimated code lengths. Each position is
  * indexed regardless of the chosen path, so match availability is stable. */
-static int lz_optimal_reparse(const uint8_t *in, size_t n, size_t emit_from,
-                              Tok *toks, size_t *ntok,
-                              uint64_t *freqA, uint64_t *freqB, int maxchain)
+static int lz_optimal_reparse(const uint8_t *__restrict in, size_t n,
+                              size_t emit_from, Tok *__restrict toks,
+                              size_t *__restrict ntok,
+                              uint64_t *__restrict freqA,
+                              uint64_t *__restrict freqB, int maxchain)
 {
     size_t size = n - emit_from, pos, count = 0;
     uint64_t *cost;
